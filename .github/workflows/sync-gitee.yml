@@ -1,0 +1,70 @@
+name: Sync Release to Gitee
+
+# 当 GitHub Release 发布时，自动同步安装包 + 版本信息到 Gitee
+# Electron 客户端直接读取 Gitee 上的 version.json 检查更新
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current repo (releases)
+        uses: actions/checkout@v4
+
+      - name: Get release info
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "tag=$(gh release view --json tagName --jq .tagName)" >> $GITHUB_OUTPUT
+          echo "version=$(gh release view --json tagName --jq '.tagName | ltrimstr(\"v\")')" >> $GITHUB_OUTPUT
+          echo "published=$(gh release view --json publishedAt --jq .publishedAt)" >> $GITHUB_OUTPUT
+          echo "body=$(gh release view --json body --jq .body)" >> $GITHUB_OUTPUT
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "${{ steps.release.outputs.tag }}" --clobber
+          ls -la
+
+      - name: Generate version.json
+        run: |
+          # 找到对应平台的安装包
+          EXE=$(find . -maxdepth 1 -name "*.exe" | head -1)
+          DMG=$(find . -maxdepth 1 -name "*.dmg" | head -1)
+          APPIMAGE=$(find . -maxdepth 1 -name "*.AppImage" | head -1)
+
+          cat > version.json << EOF
+          {
+            "version": "${{ steps.release.outputs.version }}",
+            "releaseDate": "${{ steps.release.outputs.published }}",
+            "releaseNotes": $(echo '${{ steps.release.outputs.body }}' | jq -Rs .),
+            "windowsUrl": "${EXE:-}",
+            "macUrl": "${DMG:-}",
+            "linuxUrl": "${APPIMAGE:-}"
+          }
+          EOF
+          cat version.json
+
+      - name: Push to Gitee
+        env:
+          GITEE_USER: rango123
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          git clone "https://${GITEE_USER}:${GITEE_TOKEN}@gitee.com/rango123/lingshu-updates.git" gitee-sync
+          cp -f * gitee-sync/ 2>/dev/null || true
+          cd gitee-sync
+          git config user.name "lingshu-bot"
+          git config user.email "bot@lingshu.dev"
+          git add -A
+          if git diff --staged --quiet; then
+            echo "无变化，跳过推送"
+          else
+            git commit -m "sync: ${{ steps.release.outputs.tag }}"
+            git push origin master
+            echo "已同步到 Gitee"
+          fi
