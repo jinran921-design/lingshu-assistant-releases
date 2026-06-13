@@ -20,29 +20,36 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "tag=$(gh release view --json tagName --jq .tagName)" >> $GITHUB_OUTPUT
-          echo "version=$(gh release view --json tagName --jq '.tagName | ltrimstr(\"v\")')" >> $GITHUB_OUTPUT
+          echo "version=$(gh release view --json tagName --jq '.tagName | ltrimstr("v")')" >> $GITHUB_OUTPUT
           echo "published=$(gh release view --json publishedAt --jq .publishedAt)" >> $GITHUB_OUTPUT
-          echo "body=$(gh release view --json body --jq .body)" >> $GITHUB_OUTPUT
 
-      - name: Download release assets
+      - name: Download release assets (skip >100MB, Gitee quota)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release download "${{ steps.release.outputs.tag }}" --clobber
-          ls -la
+          # Gitee 单文件限制 100MB，跳过大文件（安装包 exe/dmg 等）
+          # 大文件仍通过 GitHub CDN 下载，Worker 会自动重定向
+          gh release download "${{ steps.release.outputs.tag }}" --clobber \
+            --skip-existing 2>/dev/null || true
+          # 删除超大文件（Gitee 拒绝 >100MB）
+          find . -maxdepth 1 -type f -size +99M -delete
+          echo "保留文件:"
+          ls -lh
 
       - name: Generate version.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 找到对应平台的安装包
           EXE=$(find . -maxdepth 1 -name "*.exe" | head -1)
           DMG=$(find . -maxdepth 1 -name "*.dmg" | head -1)
           APPIMAGE=$(find . -maxdepth 1 -name "*.AppImage" | head -1)
+          BODY=$(gh release view --json body --jq .body)
 
           cat > version.json << EOF
           {
             "version": "${{ steps.release.outputs.version }}",
             "releaseDate": "${{ steps.release.outputs.published }}",
-            "releaseNotes": $(echo '${{ steps.release.outputs.body }}' | jq -Rs .),
+            "releaseNotes": $(echo "$BODY" | jq -Rs .),
             "windowsUrl": "${EXE:-}",
             "macUrl": "${DMG:-}",
             "linuxUrl": "${APPIMAGE:-}"
